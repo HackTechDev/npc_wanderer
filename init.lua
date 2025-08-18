@@ -167,8 +167,8 @@ local npc_def = {
             minetest.add_particlespawner({
                 amount = 18,
                 time = 0.2,
-                minpos = vector.add(pos, {-0.2, 0.5, -0.2}),
-                maxpos = vector.add(pos, { 0.2, 1.2,  0.2}),
+                minpos = vector.add(pos, {x=-0.2, y=0.5, z=-0.2}),
+                maxpos = vector.add(pos, {x=0.2, y=1.2,  z=0.2}),
                 minvel = {x=-0.5, y=0.5, z=-0.5},
                 maxvel = {x= 0.5, y=1.5, z= 0.5},
                 minacc = {x=0, y=-9, z=0},
