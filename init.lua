@@ -330,18 +330,18 @@ local function show_dialog_formspec(pname, obj, node_id)
     local opts  = node.options or {}
 
     local fs = {}
-    fs[#fs+1] = "formspec_version[6]"
-    fs[#fs+1] = "size[8,6]"
-    fs[#fs+1] = ("label[0.4,0.3;%s]"):format(minetest.formspec_escape(title))
-    fs[#fs+1] = ("textarea[0.4,0.8;7.2,2.6;_txt;;%s]"):format(minetest.formspec_escape(text))
+	fs[#fs+1] = "formspec_version[6]"
+	fs[#fs+1] = "size[8,8]"
+	fs[#fs+1] = ("label[0.4,0.3;%s]"):format(minetest.formspec_escape(title))
+	fs[#fs+1] = ("textarea[0.4,0.8;7.2,3.6;_txt;;%s]"):format(minetest.formspec_escape(text))
 
-    local y = 3.6
-    for i, opt in ipairs(opts) do
-        local btnname = ("opt%d"):format(i)
-        fs[#fs+1] = ("button[0.4,%0.2f;7.2,0.9;%s;%s]")
-            :format(y, btnname, minetest.formspec_escape(opt[1]))
-        y = y + 1.0
-    end
+	local y = 4.6
+	for i, opt in ipairs(opts) do
+		local btnname = ("opt%d"):format(i)
+		fs[#fs+1] = ("button[0.4,%0.2f;7.2,0.9;%s;%s]")
+		    :format(y, btnname, minetest.formspec_escape(opt[1]))
+		y = y + 1.0
+	end
 
     -- Bouton Fermer si pas de close explicite
     if not node.close and #opts == 0 then
