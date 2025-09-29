@@ -345,7 +345,7 @@ local function show_dialog_formspec(pname, obj, node_id)
 
     -- Bouton Fermer si pas de close explicite
     if not node.close and #opts == 0 then
-        fs[#fs+1] = ("button[0.4,%0.2f;7.2,0.9;_close;Fermer]"):format(y)
+        fs[#fs+1] = ("button_exit[0.4,%0.2f;7.2,0.9;_close;Fermer]"):format(y)
     end
 
     minetest.show_formspec(pname, "npc_wander:dialog", table.concat(fs))
@@ -356,15 +356,29 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
     if formname ~= "npc_wander:dialog" then return end
     local pname = player and player:get_player_name()
     local sess = pname and ACTIVE_DIALOG[pname]
+    
     if not sess or not sess.obj or not sess.obj:get_luaentity() then
         return
     end
+    
+    -- Si le joueur a fermé la fenêtre (ESC) ou cliqué sur un button_exit
+    if fields and (fields.quit or fields._close) then
+        if sess then ACTIVE_DIALOG[pname] = nil end
+        return
+    end
+
+    if not sess or not sess.obj or not sess.obj:get_luaentity() then return end
+     
+    
+    
+    
     local lua = sess.obj:get_luaentity()
     local tree = lua._dialog_tree or DEFAULT_DIALOG
     local cur = tree[sess.node or "start"] or tree.start
     if not cur then return end
 
     -- Clique sur une option ?
+    -- Détection des clics sur options opt1..opt8
     for i = 1, 8 do
         local key = "opt"..i
         if fields[key] and cur.options and cur.options[i] then
@@ -373,7 +387,8 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
             if next_node then
                 if next_node.close then
                     ACTIVE_DIALOG[pname] = nil
-                    return -- fermer simplement
+                    minetest.close_formspec(pname, "npc_wander:dialog")
+                    return
                 else
                     ACTIVE_DIALOG[pname].node = next_id
                     show_dialog_formspec(pname, sess.obj, next_id)
@@ -382,14 +397,7 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
             end
         end
     end
-
-    -- Bouton fermer (si présent)
-    if fields._close then
-        ACTIVE_DIALOG[pname] = nil
-        return
-    end
 end)
-
 -- Définition du PNJ parlant (mêmes bases que votre NPC : marche aléatoire + dégâts)
 local npc_dialog_def = {
     initial_properties = {
