@@ -633,3 +633,120 @@ minetest.register_chatcommand("add_npc_dialog", {
     end
 })
 
+-----------------------------------------------------------------------
+-- Chargement d'arbres de dialogue depuis un fichier .lua ou .json
+-----------------------------------------------------------------------
+local MODNAME = (minetest.get_current_modname and minetest.get_current_modname()) or "npc_wander"
+local MODPATH = minetest.get_modpath(MODNAME)
+
+-- Petite validation pour éviter les surprises
+local function validate_dialog_tree(tree)
+    if type(tree) ~= "table" or type(tree.start) ~= "table" then
+        return false, "Le fichier n'a pas de table 'start'."
+    end
+    -- (facultatif) on pourrait vérifier que chaque option pointe vers un nœud existant
+    return true
+end
+
+-- Résout un chemin: absolu / relatif au mod / par défaut dans mods/npc_wander/dialogs/
+local function resolve_path(fname)
+    if not fname or fname == "" then return nil end
+    if fname:sub(1,1) == "/" then return fname end
+    if fname:find("/") then return MODPATH .. "/" .. fname end
+    return MODPATH .. "/dialogs/" .. fname
+end
+
+-- Charge un arbre via un fichier .lua qui "return { ... }"
+local function load_dialog_lua(fname)
+    local path = resolve_path(fname)
+    if not path then return nil, "Chemin invalide" end
+    local ok, t_or_err = pcall(dofile, path)
+    if not ok then
+        return nil, "Erreur dofile: " .. tostring(t_or_err)
+    end
+    if type(t_or_err) ~= "table" then
+        return nil, "Le fichier .lua doit retourner une table."
+    end
+    local ok2, msg = validate_dialog_tree(t_or_err)
+    if not ok2 then return nil, msg end
+    return t_or_err
+end
+
+-- Charge un arbre via un fichier .json (nécessite un environnement insecure)
+local function load_dialog_json(fname)
+    local path = resolve_path(fname)
+    if not path then return nil, "Chemin invalide" end
+
+    local ie = minetest.request_insecure_environment and minetest.request_insecure_environment()
+    if not ie or not ie.io then
+        minetest.log("error",
+            "[npc_wander] Lecture JSON impossible sans environnement insecure. " ..
+            "Ajoute '"..MODNAME.."' à secure.trusted_mods dans minetest.conf, " ..
+            "ou utilise un fichier .lua qui retourne la table.")
+        return nil, "no_insecure_env"
+    end
+
+    local f, err = ie.io.open(path, "rb")
+    if not f then return nil, "Ouverture échouée: " .. tostring(err) end
+    local s = f:read("*a"); f:close()
+
+    local t, perr = minetest.parse_json(s)
+    if not t then return nil, "JSON invalide: " .. tostring(perr) end
+
+    local ok2, msg = validate_dialog_tree(t)
+    if not ok2 then return nil, msg end
+    return t
+end
+
+-- /add_npc_dialog_file <lua|json> <fichier> [titre...]
+minetest.register_chatcommand("add_npc_dialog_file", {
+    params = "<lua|json> <fichier> [titre]",
+    description = "Ajoute un PNJ dialogué avec un arbre chargé depuis un fichier .lua ou .json",
+    privs = {interact = true},
+    func = function(name, param)
+        local player = minetest.get_player_by_name(name)
+        if not player then return false, "Joueur introuvable." end
+
+        local args = {}
+        for w in (param or ""):gmatch("%S+") do args[#args+1] = w end
+        if #args < 2 then
+            return false, "Usage: /add_npc_dialog_file <lua|json> <fichier> [titre]"
+        end
+
+        local kind  = args[1]:lower()
+        local file  = args[2]
+        local title = (#args >= 3) and table.concat(args, " ", 3) or "Habitant"
+
+        local tree, err
+        if kind == "lua" then
+            tree, err = load_dialog_lua(file)
+        elseif kind == "json" then
+            tree, err = load_dialog_json(file)
+        else
+            return false, "Type inconnu: "..kind.." (attendu: lua|json)"
+        end
+        if not tree then
+            return false, "Échec du chargement ("..tostring(err)..")"
+        end
+
+        -- Spawn devant le joueur, comme les autres commandes
+        local pos = vector.add(player:get_pos(), vector.multiply(player:get_look_dir(), 1.5))
+        pos.y = pos.y + 0.5
+        local obj = minetest.add_entity(pos, "npc_wander:npc_dialog")
+        if not obj then
+            return false, "Impossible d'ajouter le PNJ."
+        end
+
+        local lua = obj:get_luaentity()
+        if lua then
+            lua._tex = (copy_textures_from_player and copy_textures_from_player(player)) or {"character.png"}
+            obj:set_properties({textures = lua._tex})
+            lua._dialog_title = title
+            lua._dialog_tree  = tree
+            obj:set_properties({nametag = title})
+        end
+
+        return true, "PNJ dialogué ajouté avec l'arbre depuis '"..file.."'."
+    end
+})
+

@@ -1,0 +1,20 @@
+{
+  "start": {
+    "text": "Salut voyageur ! Tu cherches quelque chose ?",
+    "options": [
+      ["Qui es-tu ?", "who"],
+      ["Tu vends quoi ?", "wares"],
+      ["Rien, merci.", "bye"]
+    ]
+  },
+  "who": {
+    "text": "Je suis un marchand itinérant. Des bonnes affaires si tu en as les moyens.",
+    "options": [["Retour", "start"]]
+  },
+  "wares": {
+    "text": "Je n'ai rien sur moi ici, mais repasse plus tard !",
+    "options": [["Retour", "start"]]
+  },
+  "bye": { "text": "Bon voyage !", "close": true }
+}
+
