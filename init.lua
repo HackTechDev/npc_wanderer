@@ -267,3 +267,361 @@ minetest.register_chatcommand("add_npc", {
         return false, "Échec de l'ajout du NPC."
     end
 })
+
+-----------------------------------------------------------------------
+-- npc_dialog — PNJ qui marche aléatoirement + petit système de dialogue
+-- Auteur : Vous + ChatGPT
+-- Licence : MIT
+-----------------------------------------------------------------------
+
+local DIALOG_NPC_NAME = "npc_wander:npc_dialog"
+
+-- Arbre de dialogue simple (modifiable)
+local DEFAULT_DIALOG = {
+    start = {
+        text = "Salut ! Besoin de quelque chose ?",
+        options = {
+            {"Qui es-tu ?", "who"},
+            {"Des conseils pour débuter ?", "tips"},
+            {"Rien, merci. (fermer)", "bye"},
+        }
+    },
+    who = {
+        text = "Je suis un PNJ de démo. J'observe, je marche, je parle !",
+        options = {
+            {"Retour", "start"},
+            {"Au revoir", "bye"},
+        }
+    },
+    tips = {
+        text = "Conseil rapide : fabrique quelques outils et construis un abri avant la nuit.",
+        options = {
+            {"Encore un conseil", "tips2"},
+            {"Retour", "start"},
+        }
+    },
+    tips2 = {
+        text = "Pense à garder de la nourriture et une torche sur toi. Bon jeu !",
+        options = {
+            {"Retour", "start"},
+            {"Au revoir", "bye"},
+        }
+    },
+    bye = {
+        text = "À plus !",
+        close = true,
+    }
+}
+
+-- Session de dialogue en cours par joueur
+local ACTIVE_DIALOG = {} -- [playername] = { obj = ObjectRef, node = "start" }
+
+-- Génère et affiche le formspec pour un nœud de l'arbre
+local function show_dialog_formspec(pname, obj, node_id)
+    local lua = obj and obj:get_luaentity()
+    if not lua or not lua._dialog_tree then return end
+    local node = lua._dialog_tree[node_id or "start"] or lua._dialog_tree.start
+    if not node then return end
+
+    ACTIVE_DIALOG[pname] = { obj = obj, node = node_id or "start" }
+
+    local title = lua._dialog_title or "Dialogue"
+    local text  = node.text or ""
+    local opts  = node.options or {}
+
+    local fs = {}
+    fs[#fs+1] = "formspec_version[6]"
+    fs[#fs+1] = "size[8,6]"
+    fs[#fs+1] = ("label[0.4,0.3;%s]"):format(minetest.formspec_escape(title))
+    fs[#fs+1] = ("textarea[0.4,0.8;7.2,2.6;_txt;;%s]"):format(minetest.formspec_escape(text))
+
+    local y = 3.6
+    for i, opt in ipairs(opts) do
+        local btnname = ("opt%d"):format(i)
+        fs[#fs+1] = ("button[0.4,%0.2f;7.2,0.9;%s;%s]")
+            :format(y, btnname, minetest.formspec_escape(opt[1]))
+        y = y + 1.0
+    end
+
+    -- Bouton Fermer si pas de close explicite
+    if not node.close and #opts == 0 then
+        fs[#fs+1] = ("button[0.4,%0.2f;7.2,0.9;_close;Fermer]"):format(y)
+    end
+
+    minetest.show_formspec(pname, "npc_wander:dialog", table.concat(fs))
+end
+
+-- Réception des choix du joueur
+minetest.register_on_player_receive_fields(function(player, formname, fields)
+    if formname ~= "npc_wander:dialog" then return end
+    local pname = player and player:get_player_name()
+    local sess = pname and ACTIVE_DIALOG[pname]
+    if not sess or not sess.obj or not sess.obj:get_luaentity() then
+        return
+    end
+    local lua = sess.obj:get_luaentity()
+    local tree = lua._dialog_tree or DEFAULT_DIALOG
+    local cur = tree[sess.node or "start"] or tree.start
+    if not cur then return end
+
+    -- Clique sur une option ?
+    for i = 1, 8 do
+        local key = "opt"..i
+        if fields[key] and cur.options and cur.options[i] then
+            local next_id = cur.options[i][2]
+            local next_node = tree[next_id]
+            if next_node then
+                if next_node.close then
+                    ACTIVE_DIALOG[pname] = nil
+                    return -- fermer simplement
+                else
+                    ACTIVE_DIALOG[pname].node = next_id
+                    show_dialog_formspec(pname, sess.obj, next_id)
+                    return
+                end
+            end
+        end
+    end
+
+    -- Bouton fermer (si présent)
+    if fields._close then
+        ACTIVE_DIALOG[pname] = nil
+        return
+    end
+end)
+
+-- Définition du PNJ parlant (mêmes bases que votre NPC : marche aléatoire + dégâts)
+local npc_dialog_def = {
+    initial_properties = {
+        physical = true,
+        collide_with_objects = true,
+        collisionbox = {-0.3, 0.0, -0.3, 0.3, 1.8, 0.3},
+        selectionbox = {-0.3, 0.0, -0.3, 0.3, 1.8, 0.3},
+        stepheight = 1.1,
+        visual = "mesh",
+        mesh = "character.b3d",
+        textures = {"character.png"},
+        visual_size = {x = 1, y = 1},
+        hp_max = 20,
+        makes_footstep_sound = true,
+        static_save = true,
+        pointable = true,
+        nametag = "PNJ",
+        nametag_color = "#FFFFFF",
+    },
+
+    -- État interne
+    _timer = 0,
+    _state = "idle",
+    _state_left = 0,
+    _yaw = 0,
+    _anims = nil,
+    _tex = nil,
+
+    -- Dialogue
+    _dialog_tree = DEFAULT_DIALOG,
+    _dialog_title = "PNJ",
+
+    on_activate = function(self, staticdata, dtime_s)
+        self.object:set_acceleration({x = 0, y = GRAVITY, z = 0})
+        self._anims = get_player_anims()
+        self._yaw = math.random() * math.pi * 2
+        self.object:set_yaw(self._yaw)
+        self.object:set_armor_groups({ fleshy = 100 })
+
+        -- Restauration textures + titre si sauvegardé
+        if staticdata and staticdata ~= "" then
+            local data = minetest.deserialize(staticdata)
+            if type(data) == "table" then
+                if data.tex then
+                    self._tex = data.tex
+                    self.object:set_properties({textures = self._tex})
+                end
+                if data.title then
+                    self._dialog_title = data.title
+                    self.object:set_properties({nametag = data.title})
+                end
+            end
+        end
+
+        self:_switch_state("idle")
+    end,
+
+    get_staticdata = function(self)
+        return minetest.serialize({ tex = self._tex, title = self._dialog_title })
+    end,
+
+    _switch_state = function(self, new_state)
+        self._state = new_state
+        if new_state == "walk" then
+            self._state_left = math.random(WALK_MIN, WALK_MAX)
+            local a = self._anims.walk
+            self.object:set_animation({x = a.x, y = a.y}, a.speed or 30, 0, true)
+            self._yaw = rand_yaw()
+            self.object:set_yaw(self._yaw)
+        else
+            self._state_left = math.random(IDLE_MIN, IDLE_MAX)
+            local a = self._anims.stand
+            self.object:set_animation({x = a.x, y = a.y}, a.speed or 25, 0, true)
+            local v = self.object:get_velocity() or {x=0,y=0,z=0}
+            self.object:set_velocity({x = 0, y = v.y, z = 0})
+        end
+    end,
+
+    _blocked_or_ledge = function(self)
+        local pos = self.object:get_pos()
+        if not pos then return true end
+        local dir = minetest.yaw_to_dir(self._yaw)
+        local ahead = vector.add(pos, vector.multiply(dir, 0.6))
+        if is_walkable({x=ahead.x, y=ahead.y + 0.1, z=ahead.z})
+        or is_walkable({x=ahead.x, y=ahead.y + 1.1, z=ahead.z}) then
+            return true
+        end
+        if not is_walkable({x=ahead.x, y=ahead.y - 0.9, z=ahead.z}) then
+            return true
+        end
+        return false
+    end,
+
+    on_punch = function(self, puncher, tflp, toolcaps, dir, damage)
+        if dir then
+            local kb = vector.multiply(dir, 2)
+            kb.y = 2
+            local v = self.object:get_velocity() or {x=0,y=0,z=0}
+            self.object:set_velocity({x = v.x + kb.x, y = v.y + kb.y, z = v.z + kb.z})
+        end
+        minetest.sound_play("player_damage", {object = self.object, gain = 0.35, max_hear_distance = 16}, true)
+    end,
+
+    on_death = function(self, killer)
+        local pos = self.object:get_pos()
+        if pos then
+            minetest.add_particlespawner({
+                amount = 18,
+                time = 0.2,
+                minpos = vector.add(pos, {x=-0.2, y=0.5, z=-0.2}),
+                maxpos = vector.add(pos, {x=0.2, y=1.2,  z=0.2}),
+                minvel = {x=-0.5, y=0.5, z=-0.5},
+                maxvel = {x= 0.5, y=1.5, z= 0.5},
+                minacc = {x=0, y=-9, z=0},
+                maxacc = {x=0, y=-9, z=0},
+                minexptime = 0.3,
+                maxexptime = 0.8,
+                minsize = 1,
+                maxsize = 2,
+                texture = "default_item_smoke.png^[brighten",
+                glow = 3,
+            })
+            minetest.sound_play("player_death", {pos = pos, gain = 0.6, max_hear_distance = 32}, true)
+        end
+        -- Nettoyage des sessions liées à cet objet
+        for pname, sess in pairs(ACTIVE_DIALOG) do
+            if sess.obj == self.object then
+                ACTIVE_DIALOG[pname] = nil
+            end
+        end
+    end,
+
+    on_rightclick = function(self, clicker)
+        if not clicker or not clicker:is_player() then return end
+        -- Tourne vers le joueur
+        local ppos = clicker:get_pos()
+        local mpos = self.object:get_pos()
+        if ppos and mpos then
+            local dir = vector.direction(mpos, ppos)
+            local yaw = minetest.dir_to_yaw(dir) + math.pi -- regarder vers le joueur
+            self._yaw = yaw
+            self.object:set_yaw(yaw)
+        end
+        show_dialog_formspec(clicker:get_player_name(), self.object, "start")
+    end,
+
+    on_step = function(self, dtime, moveresult)
+        self._timer = self._timer + dtime
+        self._state_left = self._state_left - dtime
+
+        if self._timer >= STEP_INTERVAL then
+            self._timer = 0
+            if self._state_left <= 0 then
+                if self._state == "idle" then
+                    self:_switch_state("walk")
+                else
+                    self:_switch_state("idle")
+                end
+            end
+
+            if self._state == "walk" then
+                if self:_blocked_or_ledge() then
+                    self._yaw = self._yaw + (math.random() * math.pi/2 - math.pi/4)
+                    self.object:set_yaw(self._yaw)
+                end
+                local dir = minetest.yaw_to_dir(self._yaw)
+                local v = self.object:get_velocity() or {x=0,y=0,z=0}
+                self.object:set_velocity({x = dir.x * WALK_SPEED, y = v.y, z = dir.z * WALK_SPEED})
+            end
+        end
+    end,
+}
+
+minetest.register_entity(DIALOG_NPC_NAME, npc_dialog_def)
+
+-- Outil d'apparition (spawner) pour PNJ dialogué
+minetest.register_craftitem("npc_wander:spawner_dialog", {
+    description = "Spawner de NPC (dialogue, texture du joueur)",
+    inventory_image = "default_paper.png^[brighten^[colorize:#ad7:80",
+    stack_max = 99,
+    on_place = function(itemstack, placer, pointed)
+        if not placer or not placer:is_player() then return itemstack end
+        local pos
+        if pointed and pointed.type == "node" then
+            pos = pointed.above
+        else
+            pos = vector.add(placer:get_pos(), vector.multiply(placer:get_look_dir(), 1.5))
+            pos = {x=math.floor(pos.x+0.5), y=math.floor(pos.y+0.5), z=math.floor(pos.z+0.5)}
+        end
+        local obj = minetest.add_entity(pos, DIALOG_NPC_NAME)
+        if obj then
+            local lua = obj:get_luaentity()
+            if lua then
+                lua._tex = copy_textures_from_player(placer)
+                obj:set_properties({textures = lua._tex})
+                lua._dialog_title = "Habitant"
+                obj:set_properties({nametag = lua._dialog_title})
+            end
+            if not minetest.is_creative_enabled(placer:get_player_name()) then
+                itemstack:take_item()
+            end
+        end
+        return itemstack
+    end
+})
+
+-- Commande /add_npc_dialog pour ajouter rapidement un PNJ dialogué
+minetest.register_chatcommand("add_npc_dialog", {
+    description = "Ajoute un NPC avec petit dialogue (texture = votre skin)",
+    privs = {interact = true},
+    func = function(name, param)
+        local player = minetest.get_player_by_name(name)
+        if not player then return false, "Joueur introuvable." end
+
+        -- Param optionnel : titre du PNJ (ex: /add_npc_dialog Marchand)
+        local title = param and param:gsub("^%s*(.-)%s*$", "%1")
+        if title == "" then title = "Habitant" end
+
+        local pos = vector.add(player:get_pos(), vector.multiply(player:get_look_dir(), 1.5))
+        pos.y = pos.y + 0.5
+        local obj = minetest.add_entity(pos, DIALOG_NPC_NAME)
+        if obj then
+            local lua = obj:get_luaentity()
+            if lua then
+                lua._tex = copy_textures_from_player(player)
+                obj:set_properties({textures = lua._tex})
+                lua._dialog_title = title
+                obj:set_properties({nametag = title})
+            end
+            return true, "NPC dialogué ajouté."
+        end
+        return false, "Échec de l'ajout du NPC."
+    end
+})
+
