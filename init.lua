@@ -351,53 +351,158 @@ local function show_dialog_formspec(pname, obj, node_id)
     minetest.show_formspec(pname, "npc_wander:dialog", table.concat(fs))
 end
 
+-- ====== Helpers pour actions de dialogue ======
+local function to_itemstack(spec)
+    -- Accepte "default:apple 3" OU {name="default:apple", count=3, wear=0, meta={key="val"}}
+    if type(spec) == "string" then
+        return ItemStack(spec)
+    elseif type(spec) == "table" then
+        local name  = spec.name or spec[1]
+        local count = tonumber(spec.count or spec[2] or 1) or 1
+        local wear  = tonumber(spec.wear or 0) or 0
+        if not name then return nil end
+        local stack = ItemStack({name=name, count=count, wear=wear})
+        if spec.meta then
+            local m = stack:get_meta()
+            for k,v in pairs(spec.meta) do
+                m:set_string(k, tostring(v))
+            end
+        end
+        return stack
+    end
+    return nil
+end
+
+local function give_item_or_drop(player, stack)
+    if not player or not stack or stack:is_empty() then return "none" end
+    local inv = player:get_inventory()
+    if inv and inv:room_for_item("main", stack) then
+        inv:add_item("main", stack)
+        return "added"
+    else
+        local pos = player:get_pos()
+        if pos then
+            pos = vector.add(pos, {x=0, y=0.8, z=0})
+            local obj = minetest.add_item(pos, stack)
+            if obj then obj:set_velocity({x=0, y=2, z=0}) end
+        end
+        return "dropped"
+    end
+end
+
+-- Exécute les actions (don d’objets, message…) définies sur une option
+local function perform_dialog_actions(player, actions)
+    if type(actions) ~= "table" then return end
+    local pname = player:get_player_name()
+
+    -- Un seul item
+    if actions.give_item then
+        local st = to_itemstack(actions.give_item)
+        if st then
+            local how = give_item_or_drop(player, st)
+            if actions.msg ~= false then
+                local txt = actions.msg
+                    or (how == "added" and ("Tu reçois: "..st:to_string()))
+                    or (how == "dropped" and ("Inventaire plein : l’objet a été déposé au sol: "..st:to_string()))
+                    or nil
+                if txt then minetest.chat_send_player(pname, txt) end
+            end
+        end
+    end
+
+    -- Plusieurs items
+    if actions.give_items and type(actions.give_items) == "table" then
+        for _,spec in ipairs(actions.give_items) do
+            local st = to_itemstack(spec)
+            if st then
+                local how = give_item_or_drop(player, st)
+                if actions.msg_each then
+                    local txt = actions.msg_each
+                        :gsub("%%ITEM%%", st:get_name())
+                        :gsub("%%COUNT%%", tostring(st:get_count()))
+                        :gsub("%%HOW%%", how)
+                    minetest.chat_send_player(pname, txt)
+                end
+            end
+        end
+        if actions.msg then
+            minetest.chat_send_player(pname, actions.msg)
+        end
+    end
+end
+-- ====== Fin helpers ======
+
+
+
+
+
 -- Réception des choix du joueur
 minetest.register_on_player_receive_fields(function(player, formname, fields)
     if formname ~= "npc_wander:dialog" then return end
     local pname = player and player:get_player_name()
     local sess = pname and ACTIVE_DIALOG[pname]
-    
-    if not sess or not sess.obj or not sess.obj:get_luaentity() then
-        return
-    end
-    
-    -- Si le joueur a fermé la fenêtre (ESC) ou cliqué sur un button_exit
+
+    -- Fermeture (ESC ou button_exit)
     if fields and (fields.quit or fields._close) then
         if sess then ACTIVE_DIALOG[pname] = nil end
         return
     end
 
     if not sess or not sess.obj or not sess.obj:get_luaentity() then return end
-     
-    
-    
-    
-    local lua = sess.obj:get_luaentity()
+
+    local lua  = sess.obj:get_luaentity()
     local tree = lua._dialog_tree or DEFAULT_DIALOG
-    local cur = tree[sess.node or "start"] or tree.start
+    local cur  = tree[sess.node or "start"] or tree.start
     if not cur then return end
 
-    -- Clique sur une option ?
-    -- Détection des clics sur options opt1..opt8
-    for i = 1, 8 do
+    -- Clic sur une option ?
+    for i = 1, 12 do
         local key = "opt"..i
         if fields[key] and cur.options and cur.options[i] then
-            local next_id = cur.options[i][2]
-            local next_node = tree[next_id]
-            if next_node then
-                if next_node.close then
-                    ACTIVE_DIALOG[pname] = nil
-                    minetest.close_formspec(pname, "npc_wander:dialog")
-                    return
-                else
-                    ACTIVE_DIALOG[pname].node = next_id
-                    show_dialog_formspec(pname, sess.obj, next_id)
-                    return
-                end
+            local opt      = cur.options[i]
+            local label    = opt[1]
+            local jump     = opt[2]              -- soit string (id de nœud), soit table d'actions
+            local actions  = nil
+            local next_id  = nil
+            local do_close = false
+
+            if type(jump) == "table" then
+                actions  = jump
+                next_id  = jump.goto
+                do_close = jump.close == true
+            else
+                next_id  = jump
             end
+
+            -- Exécuter d’abord les actions (don d'objets, etc.)
+            if actions then
+                perform_dialog_actions(player, actions)
+            end
+
+            -- Fermer si demandé
+            if do_close then
+                ACTIVE_DIALOG[pname] = nil
+                minetest.close_formspec(pname, "npc_wander:dialog")
+                return
+            end
+
+            -- Naviguer vers un autre nœud si indiqué
+            if next_id and tree[next_id] then
+                ACTIVE_DIALOG[pname].node = next_id
+                show_dialog_formspec(pname, sess.obj, next_id)
+                return
+            end
+
+            -- Sinon, rester sur place et rafraîchir
+            show_dialog_formspec(pname, sess.obj, sess.node)
+            return
         end
     end
 end)
+
+
+
+
 -- Définition du PNJ parlant (mêmes bases que votre NPC : marche aléatoire + dégâts)
 local npc_dialog_def = {
     initial_properties = {

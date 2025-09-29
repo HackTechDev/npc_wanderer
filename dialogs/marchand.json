@@ -1,20 +1,21 @@
 {
   "start": {
-    "text": "Salut voyageur ! Tu cherches quelque chose ?",
+    "text": "Salut ! Je peux te donner des choses.",
     "options": [
-      ["Qui es-tu ?", "who"],
-      ["Tu vends quoi ?", "wares"],
-      ["Rien, merci.", "bye"]
+      ["Une pomme, stp", {"goto":"start", "give_item":"default:apple 1", "msg":"Tiens, une pomme."}],
+      ["10 torches", {"give_item":{"name":"default:torch","count":10}, "close":true, "msg":"Torches livrées !"}],
+      ["Un kit de départ", {
+        "give_items": [
+          "default:pick_steel 1",
+          {"name":"default:apple","count":5},
+          {"name":"default:torch","count":20}
+        ],
+        "msg": "Voilà le kit de départ.",
+        "goto": "start"
+      }],
+      ["Au revoir", "bye"]
     ]
   },
-  "who": {
-    "text": "Je suis un marchand itinérant. Des bonnes affaires si tu en as les moyens.",
-    "options": [["Retour", "start"]]
-  },
-  "wares": {
-    "text": "Je n'ai rien sur moi ici, mais repasse plus tard !",
-    "options": [["Retour", "start"]]
-  },
-  "bye": { "text": "Bon voyage !", "close": true }
+  "bye": { "text": "À plus !", "close": true }
 }
 
