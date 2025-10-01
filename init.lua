@@ -331,7 +331,7 @@ local function show_dialog_formspec(pname, obj, node_id)
 
     local fs = {}
 	fs[#fs+1] = "formspec_version[6]"
-	fs[#fs+1] = "size[8,8]"
+	fs[#fs+1] = "size[8,9]"
 	fs[#fs+1] = ("label[0.4,0.3;%s]"):format(minetest.formspec_escape(title))
 	fs[#fs+1] = ("textarea[0.4,0.8;7.2,3.6;_txt;;%s]"):format(minetest.formspec_escape(text))
 
