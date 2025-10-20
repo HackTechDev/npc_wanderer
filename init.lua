@@ -316,6 +316,40 @@ local DEFAULT_DIALOG = {
 -- Session de dialogue en cours par joueur
 local ACTIVE_DIALOG = {} -- [playername] = { obj = ObjectRef, node = "start" }
 
+-----------------------------------------------------------------------
+-- Helpers : suivre / arrêter de suivre un joueur
+-----------------------------------------------------------------------
+local function npc_start_follow(obj, player, min_dist, max_chase)
+    if not (obj and player) then return end
+    local lua = obj:get_luaentity()
+    if not lua then return end
+    local pname = player:get_player_name()
+    if not pname then return end
+
+    lua._follow = {
+        name = pname,
+        min  = tonumber(min_dist) or 2.5,  -- distance confortable
+        max  = tonumber(max_chase) or 24,  -- distance au-delà de laquelle on accélère un peu
+    }
+    -- petite réaction visuelle
+    local title = (lua._dialog_title or "PNJ")
+    obj:set_properties({nametag = title .. " ★"})
+end
+
+local function npc_stop_follow(obj)
+    local lua = obj and obj:get_luaentity()
+    if not lua then return end
+    lua._follow = nil
+    -- remettre le nametag d'origine si dispo
+    if lua._dialog_title then
+        obj:set_properties({nametag = lua._dialog_title})
+    end
+    -- stopper la vitesse horizontale
+    local v = obj:get_velocity() or {x=0,y=0,z=0}
+    obj:set_velocity({x=0, y=v.y, z=0})
+end
+
+
 -- Génère et affiche le formspec pour un nœud de l'arbre
 local function show_dialog_formspec(pname, obj, node_id)
     local lua = obj and obj:get_luaentity()
@@ -478,6 +512,16 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
             if actions then
                 perform_dialog_actions(player, actions)
             end
+
+            -- 3.1) FOLLOW / UNFOLLOW
+            if actions and actions.follow then
+                npc_start_follow(sess.obj, player, actions.follow_radius or 2.5, actions.follow_max or 24)
+            end
+            if actions and (actions.unfollow or actions.stop_follow) then
+                npc_stop_follow(sess.obj)
+            end
+
+
 
             -- Fermer si demandé
             if do_close then
@@ -649,31 +693,126 @@ local npc_dialog_def = {
         show_dialog_formspec(clicker:get_player_name(), self.object, "start")
     end,
 
-    on_step = function(self, dtime, moveresult)
-        self._timer = self._timer + dtime
-        self._state_left = self._state_left - dtime
+on_step = function(self, dtime, moveresult)
+    self._timer = (self._timer or 0) + dtime
+    self._state_left = (self._state_left or 0) - dtime
 
-        if self._timer >= STEP_INTERVAL then
-            self._timer = 0
-            if self._state_left <= 0 then
-                if self._state == "idle" then
-                    self:_switch_state("walk")
-                else
-                    self:_switch_state("idle")
-                end
-            end
+    -- SUIVI : priorité si une cible est définie
+    if self._follow and self._follow.name then
+        local player = minetest.get_player_by_name(self._follow.name)
+        if not player then
+            -- cible perdue → arrêt du suivi
+            self._follow = nil
+        else
+            local ppos = player:get_pos()
+            local mpos = self.object:get_pos()
+            if ppos and mpos then
+                local dx = ppos.x - mpos.x
+                local dz = ppos.z - mpos.z
+                local dist2 = dx*dx + dz*dz
+                local dist = math.sqrt(dist2)
 
-            if self._state == "walk" then
-                if self:_blocked_or_ledge() then
-                    self._yaw = self._yaw + (math.random() * math.pi/2 - math.pi/4)
-                    self.object:set_yaw(self._yaw)
+                -- tourner vers le joueur (regard)
+                local yaw = minetest.dir_to_yaw({x=dx, y=0, z=dz})
+                self._yaw = yaw
+                self.object:set_yaw(yaw)
+
+                local min_d = self._follow.min or 2.5
+                local max_d = self._follow.max or 24
+
+                -- simple anti-précipice/obstacle
+                local function blocked()
+                    local dir = minetest.yaw_to_dir(self._yaw)
+                    local ahead = vector.add(mpos, vector.multiply(dir, 0.6))
+                    if is_walkable({x=ahead.x, y=ahead.y + 0.1, z=ahead.z})
+                    or is_walkable({x=ahead.x, y=ahead.y + 1.1, z=ahead.z}) then
+                        return true
+                    end
+                    if not is_walkable({x=ahead.x, y=ahead.y - 0.9, z=ahead.z}) then
+                        return true
+                    end
+                    return false
                 end
-                local dir = minetest.yaw_to_dir(self._yaw)
+
                 local v = self.object:get_velocity() or {x=0,y=0,z=0}
-                self.object:set_velocity({x = dir.x * WALK_SPEED, y = v.y, z = dir.z * WALK_SPEED})
+                if dist > min_d then
+                    -- accélérer un peu si la cible est loin
+                    local speed = (dist > max_d) and (WALK_SPEED * 1.5) or WALK_SPEED
+                    if blocked() then
+                        -- petit essai de contournement
+                        self._yaw = self._yaw + (math.random() * math.pi/2 - math.pi/4)
+                        self.object:set_yaw(self._yaw)
+                    end
+                    local dir = minetest.yaw_to_dir(self._yaw)
+                    self.object:set_velocity({x = dir.x * speed, y = v.y, z = dir.z * speed})
+                    -- animation de marche
+                    if self._anims and self._anims.walk then
+                        local a = self._anims.walk
+                        self.object:set_animation({x=a.x,y=a.y}, a.speed or 30, 0, true)
+                    end
+                else
+                    -- à distance confortable → s'arrêter
+                    self.object:set_velocity({x=0, y=v.y, z=0})
+                    if self._anims and self._anims.stand then
+                        local a = self._anims.stand
+                        self.object:set_animation({x=a.x,y=a.y}, a.speed or 25, 0, true)
+                    end
+                end
             end
         end
-    end,
+        -- gravité continue
+        if self._timer >= STEP_INTERVAL then self._timer = 0 end
+        return
+    end
+
+    -- Comportement par défaut (idle/walk aléatoire) si pas de follow
+    if self._timer >= STEP_INTERVAL then
+        self._timer = 0
+        if self._state_left <= 0 then
+            if self._state == "idle" then
+                self._state = "walk"
+                self._state_left = math.random(WALK_MIN, WALK_MAX)
+                local a = self._anims and self._anims.walk or {x=168,y=187,speed=30}
+                self.object:set_animation({x=a.x, y=a.y}, a.speed or 30, 0, true)
+                self._yaw = rand_yaw()
+                self.object:set_yaw(self._yaw)
+            else
+                self._state = "idle"
+                self._state_left = math.random(IDLE_MIN, IDLE_MAX)
+                local a = self._anims and self._anims.stand or {x=0,y=79,speed=25}
+                self.object:set_animation({x=a.x, y=a.y}, a.speed or 25, 0, true)
+                local v = self.object:get_velocity() or {x=0,y=0,z=0}
+                self.object:set_velocity({x = 0, y = v.y, z = 0})
+            end
+        end
+
+        if self._state == "walk" then
+            -- anti-obstacle/ledge
+            local function blocked_or_ledge()
+                local pos = self.object:get_pos()
+                if not pos then return true end
+                local dir = minetest.yaw_to_dir(self._yaw)
+                local ahead = vector.add(pos, vector.multiply(dir, 0.6))
+                if is_walkable({x=ahead.x, y=ahead.y + 0.1, z=ahead.z})
+                or is_walkable({x=ahead.x, y=ahead.y + 1.1, z=ahead.z}) then
+                    return true
+                end
+                if not is_walkable({x=ahead.x, y=ahead.y - 0.9, z=ahead.z}) then
+                    return true
+                end
+                return false
+            end
+            if blocked_or_ledge() then
+                self._yaw = self._yaw + (math.random() * math.pi/2 - math.pi/4)
+                self.object:set_yaw(self._yaw)
+            end
+            local dir = minetest.yaw_to_dir(self._yaw)
+            local v = self.object:get_velocity() or {x=0,y=0,z=0}
+            self.object:set_velocity({x = dir.x * WALK_SPEED, y = v.y, z = dir.z * WALK_SPEED})
+        end
+    end
+end,
+
 }
 
 minetest.register_entity(DIALOG_NPC_NAME, npc_dialog_def)

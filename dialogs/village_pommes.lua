@@ -13,6 +13,9 @@ return {
     apples = {
         text = "Des pommes fraîches ! Tu veux en prendre ou faire un échange ?",
         options = {
+            {"Suis-moi", {follow = true, msg = "D'accord, je te suis.", goto = "start"}},
+            {"Arrête de me suivre", {unfollow = true, msg = "Très bien, je reste ici.", goto = "start"}},
+
             -- Don simple d'objets (nécessite les helpers d'actions ajoutés au mod)
             {"Une pomme (gratuite)", {give_item = "default:apple 1", msg = "Tiens, une pomme !", goto = "apples"}},
             {"5 pommes (gratuit)",   {give_items = {"default:apple 5"}, msg = "Voilà, 5 pommes.", goto = "apples"}},
